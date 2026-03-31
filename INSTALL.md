@@ -1,546 +1,273 @@
-# NixOS Installation Guide
+# NixOS Laptop Installation Guide
 
-Complete step-by-step guide for installing NixOS and setting up PJalv's configuration from scratch.
+Step-by-step guide for deploying NixOS onto a laptop using `nixos-anywhere`, rebuilding into the full desktop configuration, and setting up the Navegante development environment.
 
 ## Table of Contents
 
-- [System Requirements](#system-requirements)
-- [Preparation](#preparation)
-- [Installation](#installation)
-  - [Boot NixOS ISO](#boot-nixos-iso)
-  - [Network Configuration](#network-configuration)
-  - [Disk Partitioning](#disk-partitioning)
-  - [Filesystem Creation](#filesystem-creation)
-  - [Mounting Filesystems](#mounting-filesystems)
-  - [Base System Installation](#base-system-installation)
-  - [Configuration](#configuration)
-  - [System Installation](#system-installation)
-- [Post-Installation Setup](#post-installation-setup)
-  - [Boot into New System](#boot-into-new-system)
-  - [Apply Configuration](#apply-configuration)
-  - [User Setup](#user-setup)
-- [Automated Installation](#automated-installation)
+- [Overview](#overview)
+- [Prerequisites](#prerequisites)
+- [Phase 1: Deploy Minimal NixOS via nixos-anywhere](#phase-1-deploy-minimal-nixos-via-nixos-anywhere)
+  - [Prepare the Target Laptop](#prepare-the-target-laptop)
+  - [Run the Deployment Script](#run-the-deployment-script)
+- [Phase 2: Rebuild into Full Desktop Configuration](#phase-2-rebuild-into-full-desktop-configuration)
+  - [Log into the Laptop](#log-into-the-laptop)
+  - [Run rebuild-laptop](#run-rebuild-laptop)
+  - [Reboot into Configuration 2](#reboot-into-configuration-2)
+- [Phase 3: Set Up the Navegante Dev Flake](#phase-3-set-up-the-navegante-dev-flake)
+  - [Enable direnv](#enable-direnv)
+  - [Clone the Navegante Web Repo](#clone-the-navegante-web-repo)
+  - [Configure direnv for the Project](#configure-direnv-for-the-project)
+  - [Install Ruby Dependencies](#install-ruby-dependencies)
+  - [Start Development Services](#start-development-services)
 - [Troubleshooting](#troubleshooting)
+- [Additional Resources](#additional-resources)
 
-## System Requirements
+## Overview
 
-### Hardware
+The installation follows three phases:
 
-- **CPU**: x86_64 (64-bit)
-- **RAM**: Minimum 4GB, 8GB+ recommended
-- **Storage**: 40GB+ minimum, 80GB+ recommended
-- **UEFI**: UEFI firmware with Secure Boot support (recommended)
-- **Network**: Ethernet or WiFi card
+1. **Deploy minimal NixOS** -- Use `nixos-anywhere` to remotely install a minimal NixOS configuration onto any Linux laptop over the network. This minimal config (the `nix-laptop` flake target) includes just enough to boot, connect to the network, and rebuild.
 
-### System Types
+2. **Rebuild into the full configuration** -- Log into the laptop and run `rebuild-laptop`, which triggers `nixos-rebuild switch --flake /etc/nixos#nix-laptop`. This builds and activates the full desktop environment with niri, development tools, and all system dependencies.
 
-This configuration supports:
-- **Desktop**: Full-featured with GPU support, Steam, desktop applications
-- **Laptop**: Optimized for battery life, power management, touchpad support
-- **WSL**: Windows Subsystem for Linux configuration
+3. **Set up the Navegante dev flake** -- Configure `direnv` and the project's Nix flake to get a fully reproducible development environment with PostgreSQL, Redis, Ruby, Node.js, and helper scripts.
 
-## Preparation
+## Prerequisites
 
-### 1. Download NixOS Minimal ISO
+- A host machine with Nix installed (with flakes enabled)
+- The target laptop running any Linux distribution (or a NixOS live ISO) with SSH access enabled
+- Both machines on the same network
+- The `nix-laptop` flake repository cloned on the host machine
 
-Visit [nixos.org/download](https://nixos.org/download.html) and download:
-- **Graphical ISO**: For systems with UEFI and graphical boot
-- **Minimal ISO**: For command-line installation (smaller download)
+## Phase 1: Deploy Minimal NixOS via nixos-anywhere
 
-Recommended: Use the latest stable release.
+### Prepare the Target Laptop
 
-### 2. Create Bootable USB
+The target laptop needs to be running any Linux with SSH enabled. This can be a live NixOS ISO, an existing Linux install, or any distribution -- `nixos-anywhere` will overwrite the disk entirely.
 
-**On Linux:**
+1. Boot the laptop into a Linux environment
+2. Ensure SSH is running and you know the IP address:
+
 ```bash
-# Find your USB device (e.g., /dev/sdX)
-lsblk
-
-# Flash ISO to USB (replace /dev/sdX with your device)
-sudo dd if=nixos-minimal.iso of=/dev/sdX bs=4M status=progress conv=fsync
-sync
-```
-
-**On macOS:**
-```bash
-# Find your USB device (e.g., /dev/disk2)
-diskutil list
-
-# Unmount the disk
-diskutil unmountDisk /dev/disk2
-
-# Flash ISO to USB
-sudo dd if=nixos-minimal.iso of=/dev/disk2 bs=4m status=progress
-sync
-```
-
-**On Windows:**
-Use [Rufus](https://rufus.ie/) or [BalenaEtcher](https://www.balena.io/etcher/)
-
-### 3. Boot from USB
-
-1. Insert USB drive
-2. Restart computer
-3. Press boot menu key (F2, F12, F10, Del, etc.)
-4. Select USB drive from boot menu
-5. Boot NixOS
-
-## Installation
-
-### Boot NixOS ISO
-
-After booting, you'll see a command prompt as root.
-
-### Network Configuration
-
-#### Wired Connection (DHCP)
-```bash
-# Usually auto-configured
 ip addr show
-
-# If not, enable DHCP
-sudo dhclient
 ```
 
-#### WiFi Connection
-```bash
-# Scan for networks
-sudo wpa_supplicant -B -i wlp2s0 -c<(wpa_passphrase "SSID" "password")
+3. Ensure the `administrator` user can be accessed via SSH (or adjust the deployment script accordingly)
 
-# Or use nmtui for interactive setup
-sudo nmtui
-```
+### Run the Deployment Script
 
-#### Verify Connection
-```bash
-ping -c 3 nixos.org
-```
-
-### Disk Partitioning
-
-**IMPORTANT**: All data on the target disk will be destroyed!
-
-First, identify your disk:
-```bash
-lsblk
-fdisk -l
-```
-
-#### For Desktop (Separate /home partition)
-
-This is recommended for desktop systems to keep user data separate from system files.
+From your **host machine**, navigate to the `nix-laptop` flake directory and run the deployment script:
 
 ```bash
-sudo fdisk /dev/nvme0n1
+cd nixos-configurations/nix-laptop
 ```
 
-Interactive fdisk commands:
-```
-g               # Create GPT partition table
-n               # New partition
-1               # Partition 1 (EFI)
-<Enter>         # Default start
-+512M           # 512MB size
-t               # Change type
-1               # EFI System type
-n               # New partition
-2               # Partition 2 (Root)
-<Enter>         # Default start
-<Enter>         # Rest of disk
-n               # New partition
-3               # Partition 3 (Home)
-<Enter>         # Default start
-<Enter>         # Rest of disk
-p               # Print partition table
-w               # Write and exit
-```
-
-Partition layout:
-- `/dev/nvme0n1p1` - EFI System Partition (512MB)
-- `/dev/nvme0n1p2` - Root partition (Btrfs)
-- `/dev/nvme0n1p3` - Home partition (Btrfs)
-
-#### For Laptop (Single partition)
-
-Simpler layout for laptops, all data on single partition.
+The `deploy-nixos.sh` script uses `nixos-anywhere` to remotely install the `nix-laptop` configuration:
 
 ```bash
-sudo fdisk /dev/nvme0n1
+# Edit deploy-nixos.sh to set the correct SSH password and target IP
+# SSHPASS=<password> and administrator@<laptop-ip>
+vim deploy-nixos.sh
+
+# Run the deployment
+./deploy-nixos.sh
 ```
 
-Interactive fdisk commands:
-```
-g               # Create GPT partition table
-n               # New partition
-1               # Partition 1 (EFI)
-<Enter>         # Default start
-+512M           # 512MB size
-t               # Change type
-1               # EFI System type
-n               # New partition
-2               # Partition 2 (Root)
-<Enter>         # Default start
-<Enter>         # Rest of disk
-p               # Print partition table
-w               # Write and exit
-```
+The script does the following:
+- Connects to the target laptop over SSH
+- Partitions and formats the disk using disko (declarative disk configuration)
+- Auto-generates the hardware configuration for the target machine
+- Installs the minimal `nix-laptop` NixOS configuration
+- Sets up the bootloader and base system
 
-Partition layout:
-- `/dev/nvme0n1p1` - EFI System Partition (512MB)
-- `/dev/nvme0n1p2` - Root partition (Btrfs)
+This will take some time depending on network speed and hardware. Once complete, the laptop will be running a minimal NixOS with niri compositor, basic networking, and SSH access.
 
-### Filesystem Creation
+## Phase 2: Rebuild into Full Desktop Configuration
 
-#### Desktop Layout
-```bash
-# Format EFI partition (FAT32)
-sudo mkfs.fat -F32 /dev/nvme0n1p1
+### Log into the Laptop
 
-# Format root partition (Btrfs)
-sudo mkfs.btrfs -L nixos /dev/nvme0n1p2
-
-# Format home partition (Btrfs)
-sudo mkfs.btrfs -L home /dev/nvme0n1p3
-
-# Optional: Create swap file
-sudo btrfs subvolume create /mnt/@swap
-sudo truncate -s 0 /swap/swapfile
-sudo chattr +C /swap/swapfile
-sudo btrfs property set /swap/swapfile compression none
-sudo fallocate -l 8G /swap/swapfile
-sudo chmod 600 /swap/swapfile
-sudo mkswap /swap/swapfile
-```
-
-#### Laptop Layout
-```bash
-# Format EFI partition (FAT32)
-sudo mkfs.fat -F32 /dev/nvme0n1p1
-
-# Format root partition (Btrfs)
-sudo mkfs.btrfs -L nixos /dev/nvme0n1p2
-```
-
-### Mounting Filesystems
-
-#### Desktop Mount
-```bash
-# Mount root partition
-sudo mount /dev/nvme0n1p2 /mnt
-
-# Create mount points
-sudo mkdir -p /mnt/home /mnt/boot
-
-# Mount home partition
-sudo mount /dev/nvme0n1p3 /mnt/home
-
-# Mount EFI partition
-sudo mount /dev/nvme0n1p1 /mnt/boot
-```
-
-#### Laptop Mount
-```bash
-# Mount root partition
-sudo mount /dev/nvme0n1p2 /mnt
-
-# Create mount points
-sudo mkdir -p /mnt/boot
-
-# Mount EFI partition
-sudo mount /dev/nvme0n1p1 /mnt/boot
-```
-
-### Base System Installation
+After `nixos-anywhere` completes, the laptop will reboot into the minimal NixOS configuration. Log in either directly at the console or via SSH:
 
 ```bash
-# Generate hardware configuration
-sudo nixos-generate-config --root /mnt
+ssh administrator@<laptop-ip>
 ```
 
-This creates `/mnt/etc/nixos/configuration.nix` and `hardware-configuration.nix`
+The minimal configuration pre-loads the full laptop flake into `/etc/nixos` (symlinked from `/home/administrator/nixos-config`), so all the dependencies for the full build are already referenced.
 
-Review the generated configuration:
+### Run rebuild-laptop
+
+The system comes with a shell alias `rebuild-laptop` that rebuilds into the full nix-laptop desktop configuration:
+
 ```bash
-cat /mnt/etc/nixos/configuration.nix
-cat /mnt/etc/nixos/hardware-configuration.nix
+rebuild-laptop
 ```
 
-### Configuration
+This runs:
 
-Edit the minimal configuration:
 ```bash
-sudo nano /mnt/etc/nixos/configuration.nix
+sudo nixos-rebuild switch --flake /etc/nixos#nix-laptop
 ```
 
-Add essential settings:
+The rebuild will download and build the full desktop environment including niri, development tools, and all system packages. This step will take a while on the first run.
+
+### Reboot into Configuration 2
+
+Once the rebuild completes, reboot to activate the full configuration:
+
+```bash
+sudo reboot
+```
+
+After rebooting, you will be in the full nix-laptop desktop environment with niri compositor, all configured applications, and development tools ready.
+
+## Phase 3: Set Up the Navegante Dev Flake
+
+The Navegante project uses a Nix dev flake that provides a complete, reproducible development environment (PostgreSQL 17, Redis, Ruby 3.4.7, Node.js, Playwright, and helper scripts). We use `direnv` to automatically activate this environment when you enter the project directory.
+
+### Enable direnv
+
+Add direnv to your NixOS system configuration. Open your `configuration.nix` and add:
+
 ```nix
-{ config, pkgs, ... }:
-
-{
-  imports = [
-    ./hardware-configuration.nix
-  ];
-
-  # Bootloader
-  boot.loader.grub.enable = true;
-  boot.loader.grub.device = "/dev/nvme0n1";
-  boot.loader.grub.useOSProber = true;
-  boot.loader.efi.canTouchEfiVariables = true;
-
-  # For desktop with separate EFI mount:
-  # boot.loader.grub.efiSupport = true;
-  # boot.loader.efi.efiSysMountPoint = "/boot";
-
-  # Networking
-  networking.hostName = "nixos";
-  networking.networkmanager.enable = true;
-
-  # Timezone and locale
-  time.timeZone = "America/Los_Angeles";
-  i18n.defaultLocale = "en_US.UTF-8";
-
-  # User account (will be replaced by configuration)
-  users.users.pjalv = {
-    isNormalUser = true;
-    extraGroups = [ "wheel" "networkmanager" ];
-  };
-
-  # Enable sudo
-  security.sudo.wheelNeedsPassword = false;
-
-  # System packages
-  environment.systemPackages = with pkgs; [
-    vim
-    wget
-    git
-  ];
-
-  # Enable flakes
-  nix.settings.experimental-features = [ "nix-command" "flakes" ];
-
-  # System version
-  system.stateVersion = "24.11";
-}
+programs.direnv.enable = true;
 ```
 
-### System Installation
+**Important**: Use `programs.direnv.enable`, not `environment.systemPackages`. The NixOS module sets up the shell integration automatically.
+
+Rebuild your system to apply:
 
 ```bash
-# Install NixOS
-sudo nixos-install
-
-# This will take 15-30 minutes depending on hardware
+rebuild-laptop
 ```
 
-Set root password when prompted.
+### Clone the Navegante Web Repo
 
-After completion:
-```bash
-# Reboot
-sudo reboot
-
-# Remove USB when prompted
-```
-
-## Post-Installation Setup
-
-### Boot into New System
-
-After reboot, log in as `root` or the user you created.
-
-### Apply Configuration
-
-Now apply PJalv's NixOS configuration:
-
-#### Option 1: Automated Installation (Recommended)
+If you have not already, clone the repository:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/PJalv/nixos-config/main/install.sh | sudo bash
+git clone <navegante-web-repo-url>
 ```
 
-This will:
-- Enable flakes
-- Clone the repository
-- Detect your machine type
-- Generate hardware configuration
-- Apply the full configuration
-- Set up user `pjalv`
+### Configure direnv for the Project
 
-#### Option 2: Manual Installation
+1. `cd` into the `navegante_web` directory:
 
 ```bash
-# Clone repository
-sudo git clone https://github.com/PJalv/nixos-config.git /etc/nixos
-cd /etc/nixos
-
-# Generate hardware configuration for your machine type
-sudo nixos-generate-config --root / --no-hardware-config --dir /etc/nixos/users/pjalv/desktop
-
-# Or for laptop:
-# sudo nixos-generate-config --root / --no-hardware-config --dir /etc/nixos/users/pjalv/laptop
-
-# Apply configuration (desktop)
-sudo nixos-rebuild switch --flake .#pjalv-desktop
-
-# Or for laptop:
-# sudo nixos-rebuild switch --flake .#pjalv-laptop
+cd navegante_web
 ```
 
-### User Setup
-
-After configuration is applied:
+2. Create a `.envrc` file in the project root:
 
 ```bash
-# Set password for pjalv user
-sudo passwd pjalv
-
-# Reboot into final system
-sudo reboot
+echo "use flake" > .envrc
 ```
 
-## Automated Installation
-
-For completely hands-free installation from a fresh NixOS minimal ISO:
+3. Leave and re-enter the directory so direnv detects the new `.envrc`:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/PJalv/nixos-config/main/install.sh | sudo bash
+cd ..
+cd navegante_web
 ```
 
-The script will guide you through:
-1. Machine type selection (desktop/laptop/WSL)
-2. Hardware configuration generation
-3. Configuration application
-4. User setup
+4. direnv will prompt you to allow the configuration. Run what the terminal tells you:
+
+```bash
+direnv allow .
+```
+
+If everything is set up correctly, you should see the "Navegante Web -nix flake-" message appear along with a list of available helper scripts (like `services-start`, `services-stop`, `services-status`, etc.).
+
+### Install Ruby Dependencies
+
+Once the dev flake is active, install the Ruby gem dependencies:
+
+```bash
+bundle install
+```
+
+### Start Development Services
+
+Use the helper scripts provided by the flake to start PostgreSQL and Redis:
+
+```bash
+services-start
+```
+
+Then initialize the database:
+
+```bash
+init-database
+bin/rails db:create db:migrate db:seed
+```
+
+You are now ready to develop. Available flake helper commands:
+
+| Command | Description |
+|---|---|
+| `services-start` | Start PostgreSQL and Redis |
+| `services-stop` | Stop PostgreSQL and Redis |
+| `services-status` | Check service status |
+| `pg-start` / `pg-stop` / `pg-status` | PostgreSQL controls |
+| `redis-start` / `redis-stop` / `redis-status` | Redis controls |
+| `init-database` | Create the development database |
+| `clean-rebuild` | Clean all state and reinstall deps |
 
 ## Troubleshooting
 
-### Boot Issues
+### nixos-anywhere Deployment Fails
 
-**System won't boot after installation:**
+**Connection refused:**
+- Verify SSH is running on the target: `systemctl status sshd`
+- Check the target IP address: `ip addr show`
+- Ensure password authentication is enabled in sshd config
 
-1. Boot into live USB
-2. Mount partitions
-3. Check bootloader configuration:
-   ```bash
-   sudo fdisk -l /dev/nvme0n1
-   lsblk
-   ```
+**Disk partitioning errors:**
+- The target disk must be the expected device (check `lsblk` on the target)
+- Ensure the disk is not mounted or in use
 
-4. Reinstall bootloader:
-   ```bash
-   sudo mount /dev/nvme0n1p2 /mnt
-   sudo mount /dev/nvme0n1p1 /mnt/boot
-   sudo nixos-install --root /mnt
-   ```
+### rebuild-laptop Fails
 
-### Network Issues
+**Flake not found:**
+- Verify the symlink exists: `ls -la /etc/nixos`
+- It should point to `/home/administrator/nixos-config`
+- If missing, create it: `sudo ln -sf /home/administrator/nixos-config /etc/nixos`
 
-**No internet connection:**
+**Build errors:**
+- Run with trace for detailed output:
+  ```bash
+  sudo nixos-rebuild switch --flake /etc/nixos#nix-laptop --show-trace
+  ```
+- Check network connectivity (flake inputs need to be fetched)
 
-```bash
-# Check network interfaces
-ip link show
+### direnv Not Activating
 
-# Bring up interface
-sudo ip link set eth0 up
+**"direnv: error .envrc is blocked":**
+- Run `direnv allow .` in the project directory
 
-# Try DHCP
-sudo dhclient eth0
+**direnv command not found:**
+- Ensure `programs.direnv.enable = true` is in your configuration (not in `environment.systemPackages`)
+- Rebuild and open a new terminal session
 
-# Or manual configuration
-sudo ip addr add 192.168.1.100/24 dev eth0
-sudo ip route add default via 192.168.1.1
-echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
-```
+**Flake message does not appear:**
+- Ensure the `.envrc` file contains exactly `use flake`
+- Verify `navegante_web/flake.nix` exists
+- Try `cd ..` then `cd navegante_web` again
 
-### Installation Fails
+### Service Issues
 
-**nixos-install fails:**
+**PostgreSQL won't start:**
+- Check logs: `cat navegante_web/.nix-state/postgres/postgres.log`
+- Try a clean rebuild: `clean-rebuild`
 
-Check logs:
-```bash
-journalctl -xe
-cat /var/log/nixos-install
-```
-
-Common fixes:
-- Ensure sufficient disk space
-- Check network connectivity
-- Verify filesystem types are correct
-- Try installing without swap
-
-### Configuration Errors
-
-**nixos-rebuild switch fails:**
-
-```bash
-# Enable verbose output
-sudo nixos-rebuild switch --flake .#pjalv-desktop --show-trace
-
-# Check configuration syntax
-nix flake check
-
-# Try dry-run
-sudo nixos-rebuild dry-build --flake .#pjalv-desktop
-```
-
-### Hardware Detection Issues
-
-**Hardware not detected:**
-
-```bash
-# List all hardware
-lspci
-lsusb
-lsblk
-
-# Check kernel messages
-sudo dmesg | less
-
-# Regenerate hardware configuration
-sudo nixos-generate-config --root / --no-hardware-config --dir /etc/nixos/users/pjalv/desktop
-```
-
-### Flakes Not Working
-
-**Error: experimental feature 'flakes' is disabled:**
-
-```bash
-# Check nix.conf
-cat /etc/nix/nix.conf
-
-# Should contain:
-# experimental-features = nix-command flakes
-
-# Add if missing:
-echo "experimental-features = nix-command flakes" | sudo tee -a /etc/nix/nix.conf
-```
+**Redis won't start:**
+- Check logs: `cat navegante_web/.nix-state/redis/redis.log`
+- Check if the port is already in use: `ss -tlnp | grep 6379`
 
 ## Additional Resources
 
 - [NixOS Manual](https://nixos.org/manual/nixos/stable/)
-- [NixOS Options Search](https://search.nixos.org/options)
-- [NixOS Wiki](https://nixos.wiki/)
-- [Nix Pills](https://nixos.org/guides/nix-pills/)
-- [Nix Flakes Documentation](https://nixos.wiki/wiki/Flakes)
-
-## Getting Help
-
-If you encounter issues not covered here:
-
-1. Check the main [README.md](README.md)
-2. Search the [NixOS Discourse](https://discourse.nixos.org/)
-3. Ask in #nixos on Libera.chat IRC
-4. Check GitHub issues for this repository
-
-## Next Steps
-
-After successful installation:
-
-1. Customize your configuration in `/etc/nixos`
-2. Add additional software to your configuration
-3. Set up backups
-4. Configure your desktop environment (Hyprland, Waybar, etc.)
-5. Explore Home Manager for user-specific settings
-
-Happy hacking!
+- [nixos-anywhere Documentation](https://github.com/nix-community/nixos-anywhere)
+- [Nix Flakes](https://nixos.wiki/wiki/Flakes)
+- [direnv](https://direnv.net/)
+- [disko - Declarative Disk Partitioning](https://github.com/nix-community/disko)
+- [niri Compositor](https://github.com/YaLTeR/niri)
